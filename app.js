@@ -12,7 +12,7 @@ const firebaseConfig = {
   apiKey: 'AIzaSyADGfYlLyMB-W5A2JM6uF8VqTiF3LL9lEI',
   authDomain: 'secertmisson-19e11.firebaseapp.com',
   projectId: 'secertmisson-19e11',
-  storageBucket: 'secertmisson-19e11.firebasestorage.app',
+  storageBucket: 'test-6d28f.appspot.com',
   messagingSenderId: '730645471093',
   appId: '1:730645471093:web:dacceb7a79256deb06fd3c'
 };
