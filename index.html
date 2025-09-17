@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Secret Mission</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:0;padding:16px}
+    .active{display:block}.view{display:none}
+    .room-card{border:1px solid #ddd;padding:12px;border-radius:8px;margin-bottom:8px}
+    .room-status{font-size:12px;color:#666}
+    .room-meta{font-size:12px;color:#555;display:flex;gap:12px}
+    .badge{font-size:12px;padding:2px 6px;border-radius:4px;background:#eee}
+    .badge.owner{background:#fde68a}
+    .badge.ready{background:#bbf7d0}
+    .badge.waiting{background:#fecaca}
+    .badge.captain{background:#c7d2fe}
+    .badge.team-red{background:#fecaca}
+    .badge.team-blue{background:#bfdbfe}
+    .empty-state{color:#777}
+    #board-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:12px}
+    .card{border:1px solid #ccc;border-radius:8px;padding:12px;text-align:center;cursor:pointer;user-select:none}
+    .card.revealed{opacity:.6}
+    .role-red{background:#fee2e2}.role-blue{background:#dbeafe}
+    .role-neutral{background:#f1f5f9}.role-assassin{background:#0f172a;color:#fff}
+    .disabled .card{pointer-events:none;opacity:.5}
+    .captain-view .card{filter:contrast(1.05)}
+    #winner-banner{display:none;margin-top:8px;font-weight:700}
+    .controls{display:flex;gap:8px;margin:12px 0}
+  </style>
+</head>
+<body>
+  <h1>Secret Mission</h1>
+  <div id="auth-state">初始化中…</div>
+
+  <div id="lobby-view" class="view active">
+    <h2>大廳</h2>
+    <div id="room-list"></div>
+  </div>
+
+  <div id="room-view" class="view">
+    <div class="controls">
+      <button id="leave-room">離開房間</button>
+      <button id="toggle-ready">我準備好了</button>
+      <button id="start-game">開始遊戲</button>
+      <button id="reset-game">重置遊戲</button>
+    </div>
+    <h2 id="room-title"></h2>
+    <div id="room-meta"></div>
+    <div id="room-status"></div>
+    <div id="view-indicator"></div>
+    <h3>玩家</h3>
+    <div id="player-list"></div>
+
+    <h3>任務地圖</h3>
+    <div id="board-score"></div>
+    <div id="board-grid" class=""></div>
+    <div id="winner-banner"></div>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
