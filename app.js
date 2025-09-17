@@ -340,4 +340,166 @@ async function startGame(){
       cardRefs.forEach(ref=>tx.delete(ref));
       cards.forEach(card=>tx.set(doc(db,'rooms',safeRoomId,'cards',String(card.index)), card));
 
-      randomized.forEac
+      randomized.forEach((m,i)=>{
+        const team = i<mid ? 'red':'blue';
+        const isCaptain = (team==='red'&&m.id===redCaptain.id)||(team==='blue'&&m.id===blueCaptain.id);
+        tx.set(doc(db,'rooms',safeRoomId,'players',m.id),{ready:false,team,isCaptain},{merge:true});
+      });
+
+      tx.set(roomRef,{status:'in-progress',startingTeam,currentTurn:startingTeam,guessesRemaining:BASE_GUESSES+1,winner:null,remainingRed,remainingBlue},{merge:true});
+    });
+  }catch(e){logAndAlert(e.message||'開始遊戲失敗',e);}
+}
+async function resetGame(){
+  const roomId=state.currentRoomId; const me=getCurrentPlayer(); if(!roomId||!me) return;
+  const safeRoomId=normalizeRoomId(roomId); const playerRefs=await fetchPlayerRefs(safeRoomId); const cardRefs=await fetchCardRefs(safeRoomId);
+  try{
+    await runTransaction(db, async tx=>{
+      const roomRef=doc(db,'rooms',safeRoomId); const roomSnap=await tx.get(roomRef);
+      if(!roomSnap.exists()) throw new Error('房間不存在');
+      if(roomSnap.data().ownerId!==me.id) throw new Error('只有房主可以重設');
+      for(const item of playerRefs){ const ref=doc(db,'rooms',safeRoomId,'players',item.id); tx.set(ref,{ready:false,team:null,isCaptain:false},{merge:true}); }
+      cardRefs.forEach(ref=>tx.delete(ref));
+      tx.set(roomRef,{status:'lobby',winner:null,startingTeam:'red',currentTurn:null,guessesRemaining:null,remainingRed:null,remainingBlue:null},{merge:true});
+    });
+  }catch(e){logAndAlert(e.message||'重設遊戲失敗',e);}
+}
+async function revealCard(index){
+  const roomId=state.currentRoomId; const me=getCurrentPlayer(); if(!roomId||!me) return;
+  const safeRoomId=normalizeRoomId(roomId);
+  try{
+    await runTransaction(db, async tx=>{
+      const roomRef=doc(db,'rooms',safeRoomId);
+      const cardRef=doc(db,'rooms',safeRoomId,'cards',String(index));
+      const playerRef=doc(db,'rooms',safeRoomId,'players',me.id);
+      const [roomSnap, playerSnap, cardSnap] = await Promise.all([tx.get(roomRef), tx.get(playerRef), tx.get(cardRef)]);
+      if(!roomSnap.exists()||!playerSnap.exists()||!cardSnap.exists()) throw new Error('資料缺失');
+      const room=roomSnap.data(), player=playerSnap.data(), card=cardSnap.data();
+      if(room.status!=='in-progress') return;
+      if(player.isCaptain) throw new Error('隊長不能翻牌');
+      if(!player.team) throw new Error('觀戰者無法翻牌');
+      if(room.currentTurn && player.team!==room.currentTurn) throw new Error('尚未輪到你的隊伍');
+      if(card.revealed) return;
+
+      tx.update(cardRef,{revealed:true});
+
+      let winner=null; const updates={};
+      let guessesRemaining = typeof room.guessesRemaining==='number' ? room.guessesRemaining : BASE_GUESSES+1;
+      let nextTurn = room.currentTurn||player.team; let turnChanged=false;
+
+      if(card.role==='assassin'){ winner=otherTeam(player.team); turnChanged=true; nextTurn=null; }
+      else if(card.role==='red'){ const next=Math.max(0,(room.remainingRed??0)-1); updates.remainingRed=next; if(next===0) winner='red'; }
+      else if(card.role==='blue'){ const next=Math.max(0,(room.remainingBlue??0)-1); updates.remainingBlue=next; if(next===0) winner='blue'; }
+
+      const correct = card.role===player.team;
+      const wrongButNotAssassin = card.role!==player.team && card.role!=='assassin';
+
+      if(!winner){
+        if(correct){
+          guessesRemaining = Math.max(0, guessesRemaining-1);
+          if(guessesRemaining===0){ turnChanged=true; nextTurn=otherTeam(player.team); guessesRemaining = BASE_GUESSES+1; }
+        }else if(wrongButNotAssassin){
+          turnChanged=true; nextTurn=otherTeam(player.team); guessesRemaining = BASE_GUESSES+1;
+        }
+      }
+
+      if(winner){
+        updates.status='finished'; updates.winner=winner; updates.currentTurn=null; updates.guessesRemaining=null;
+      }else if(turnChanged){
+        updates.currentTurn=nextTurn; updates.guessesRemaining=guessesRemaining;
+      }else{
+        updates.guessesRemaining=guessesRemaining;
+      }
+
+      if(Object.keys(updates).length) tx.update(roomRef,updates);
+    });
+  }catch(e){logAndAlert(e.message||'翻牌失敗',e);}
+}
+async function kickPlayer(targetId){
+  const roomId=state.currentRoomId; const me=getCurrentPlayer(); if(!roomId||!me) return;
+  const room=state.roomData; if(!room||room.ownerId!==me.id){logAndAlert('只有房主可以踢人');return;}
+  if(!targetId||targetId===room.ownerId){logAndAlert('不可踢出房主');return;}
+  if(targetId===me.id){logAndAlert('不可踢出自己');return;}
+  const safeRoomId=normalizeRoomId(roomId);
+  const remainingSnapshot=state.players.filter(p=>p.id!==targetId);
+  const cardRefs = !remainingSnapshot.length ? await fetchCardRefs(safeRoomId) : [];
+  try{
+    await runTransaction(db, async tx=>{
+      const roomRef=doc(db,'rooms',safeRoomId); const roomSnap=await tx.get(roomRef); if(!roomSnap.exists()) throw new Error('房間不存在');
+      const targetRef=doc(db,'rooms',safeRoomId,'players',targetId); const tSnap=await tx.get(targetRef); if(!tSnap.exists()) return;
+      if(tSnap.id===roomSnap.data().ownerId) throw new Error('不可踢出房主');
+      tx.delete(targetRef);
+
+      const data=roomSnap.data(), updates={};
+      const remainingCount=Math.max(0,(data.playerCount||state.players.length)-1);
+      updates.playerCount=remainingCount;
+      if(data.ownerId===targetId){
+        if(remainingSnapshot.length){ updates.ownerId=remainingSnapshot[0].id; updates.ownerName=remainingSnapshot[0].name||''; }
+        else{ updates.ownerId=null; updates.ownerName=''; }
+      }
+      if(!remainingSnapshot.length){
+        updates.status='lobby'; updates.winner=null; updates.startingTeam='red'; updates.currentTurn=null; updates.guessesRemaining=null; updates.remainingRed=null; updates.remainingBlue=null;
+        cardRefs.forEach(ref=>tx.delete(ref));
+      }
+      tx.set(roomRef,updates,{merge:true});
+    });
+  }catch(e){logAndAlert(e.message||'踢出玩家失敗',e);}
+}
+async function leaveRoom(){
+  const roomId=state.currentRoomId; const pid=state.currentPlayerId; if(!roomId||!pid) return;
+  const safeRoomId=normalizeRoomId(roomId); const playerRefs=await fetchPlayerRefs(safeRoomId); const cardRefs=await fetchCardRefs(safeRoomId);
+  try{
+    await runTransaction(db, async tx=>{
+      const roomRef=doc(db,'rooms',safeRoomId); const roomSnap=await tx.get(roomRef); if(!roomSnap.exists()) return;
+      const players=[]; for(const item of playerRefs){ const s=await tx.get(item.ref); if(s.exists()) players.push({id:s.id,...s.data()}); }
+      if(!players.some(p=>p.id===pid)) return;
+      tx.delete(doc(db,'rooms',safeRoomId,'players',pid));
+      const remaining=players.filter(p=>p.id!==pid);
+      const updates={ playerCount: Math.max(0,(roomSnap.data().playerCount||players.length)-1) };
+      if(roomSnap.data().ownerId===pid){
+        if(remaining.length){ updates.ownerId=remaining[0].id; updates.ownerName=remaining[0].name||''; }
+        else{ updates.ownerId=null; updates.ownerName=''; }
+      }
+      if(!remaining.length){
+        updates.status='lobby'; updates.winner=null; updates.startingTeam='red'; updates.currentTurn=null; updates.guessesRemaining=null; updates.remainingRed=null; updates.remainingBlue=null;
+        cardRefs.forEach(ref=>tx.delete(ref));
+      }
+      tx.set(roomRef,updates,{merge:true});
+    });
+  }catch(e){logAndAlert('離開房間失敗',e);}
+  finally{
+    removeStoredPlayer(safeRoomId); clearLastRoom(); cleanupRoomSubscriptions();
+    state.currentRoomId=null; state.currentPlayerId=null; state.roomData=null; state.players=[]; state.cards=[];
+    updateViews(); renderRoomDetail();
+  }
+}
+
+// -------------------- Event bindings --------------------
+roomListEl.addEventListener('click', e=>{
+  const resetBtn=e.target.closest('.reset-room'); if(resetBtn){resetRoom(resetBtn.dataset.room); return;}
+  const joinBtn=e.target.closest('.join-room'); if(!joinBtn) return; handleJoinRoom(joinBtn.dataset.room);
+});
+playerListEl.addEventListener('click', e=>{
+  const btn=e.target.closest('.kick-btn'); if(!btn) return; const pid=btn.dataset.playerId; if(pid) kickPlayer(pid);
+});
+toggleReadyBtn.addEventListener('click', toggleReady);
+startGameBtn.addEventListener('click', startGame);
+resetGameBtn.addEventListener('click', resetGame);
+leaveRoomBtn.addEventListener('click', leaveRoom);
+boardGridEl.addEventListener('click', e=>{
+  const el=e.target.closest('.card'); if(!el) return; const idx=Number(el.dataset.index); if(!Number.isNaN(idx)) revealCard(idx);
+});
+
+// -------------------- Init with Anonymous Auth --------------------
+async function init(){
+  onAuthStateChanged(auth, async user=>{
+    if(user){ state.uid=user.uid; authStateEl.textContent=`已登入（匿名）`; try{
+        await ensureDefaultRooms(); subscribeToDirectory(); renderRoomList(); updateViews(); await attemptResume();
+      }catch(e){ logAndAlert('初始化 Firebase 失敗', e); }
+    }else{
+      authStateEl.textContent='登入中…';
+      try{ await signInAnonymously(auth); }catch(e){ logAndAlert('匿名登入失敗', e); }
+    }
+  });
+}
+init();
